@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { GameState, Card, Suit, Player, Rank, Bid, PlayedCard } from '../types/game';
+import { GameState, Card, Suit, Player, Rank, Bid, PlayedCard, ChatMessage } from '../types/game';
 
 const RANKS: Rank[] = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 const SUITS: Suit[] = ['hearts', 'diamonds', 'clubs', 'spades'];
@@ -8,7 +8,8 @@ const RANK_VALUES: Record<Rank, number> = {
   'J': 11, 'Q': 12, 'K': 13, 'A': 14
 };
 
-interface GameStore extends GameState {
+interface GameStore extends Omit<GameState, 'chat'> {
+  chat: ChatMessage[];
   initializeGame: (players: Player[], mode: 'points' | 'rounds') => void;
   dealCards: () => void;
   setTrumpSuit: (suit: Suit) => void;
@@ -45,6 +46,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     team1: 0,
     team2: 0,
   },
+  // Initialize with proper ChatMessage array type
+  chat: [],
+  soundEnabled: true,
+  tableId: '',
 
   initializeGame: (players, mode) => {
     set({ 
@@ -91,11 +96,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   placeBid: (playerId: string, tricks: number) => {
-    const state = get();
-    if (state.status !== 'bidding' || state.currentPlayer !== playerId) return;
+    const currentState = get();
+    if (currentState.status !== 'bidding' || currentState.currentPlayer !== playerId) return;
 
     const newBid: Bid = { playerId, tricks, pass: false };
-    const bids = [...state.bids, newBid];
+    const bids = [...currentState.bids, newBid];
     
     // Check if all players have bid or passed
     if (bids.length === 4 || bids.filter(b => !b.pass).length === 1) {
@@ -110,21 +115,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
         currentPlayer: winningBid.playerId
       });
     } else {
-      const currentPlayerIndex = state.players.findIndex(p => p.id === playerId);
+      const currentPlayerIndex = currentState.players.findIndex(p => p.id === playerId);
       const nextPlayerIndex = (currentPlayerIndex + 1) % 4;
       set({
         bids,
-        currentPlayer: state.players[nextPlayerIndex].id
+        currentPlayer: currentState.players[nextPlayerIndex].id
       });
     }
   },
 
   passBid: (playerId: string) => {
-    const state = get();
-    if (state.status !== 'bidding' || state.currentPlayer !== playerId) return;
+    const currentState = get();
+    if (currentState.status !== 'bidding' || currentState.currentPlayer !== playerId) return;
 
     const newBid: Bid = { playerId, tricks: 0, pass: true };
-    const bids = [...state.bids, newBid];
+    const bids = [...currentState.bids, newBid];
     
     const activeBids = bids.filter(b => !b.pass);
     if (activeBids.length === 1) {
@@ -136,37 +141,37 @@ export const useGameStore = create<GameStore>((set, get) => ({
         currentPlayer: winningBid.playerId
       });
     } else {
-      const currentPlayerIndex = state.players.findIndex(p => p.id === playerId);
+      const currentPlayerIndex = currentState.players.findIndex(p => p.id === playerId);
       const nextPlayerIndex = (currentPlayerIndex + 1) % 4;
       set({
         bids,
-        currentPlayer: state.players[nextPlayerIndex].id
+        currentPlayer: currentState.players[nextPlayerIndex].id
       });
     }
   },
 
   setTrumpSuit: (suit) => {
-    set(state => ({
+    set({
       trumpSuit: suit,
       status: 'playing',
       currentTrick: []
-    }));
+    });
   },
 
   evaluateTrick: (trick: PlayedCard[]): string => {
-    const state = get();
-    if (!state.trumpSuit || trick.length !== 4) return '';
+    const currentState = get();
+    if (!currentState.trumpSuit || trick.length !== 4) return '';
 
     const leadSuit = trick[0].card.suit;
     let winningCard = trick[0];
     let winningValue = RANK_VALUES[trick[0].card.rank];
 
     trick.forEach(played => {
-      const isTrump = played.card.suit === state.trumpSuit;
+      const isTrump = played.card.suit === currentState.trumpSuit;
       const isLeadSuit = played.card.suit === leadSuit;
       const cardValue = RANK_VALUES[played.card.rank];
 
-      if (isTrump && winningCard.card.suit !== state.trumpSuit) {
+      if (isTrump && winningCard.card.suit !== currentState.trumpSuit) {
         winningCard = played;
         winningValue = cardValue;
       } else if (isTrump && cardValue > winningValue) {
@@ -182,13 +187,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   playCard: (playerId: string, card: Card) => {
-    const state = get();
-    const playerIndex = state.players.findIndex(p => p.id === playerId);
+    const currentState = get();
+    const playerIndex = currentState.players.findIndex(p => p.id === playerId);
     
-    if (playerIndex === -1 || state.currentPlayer !== playerId) return;
+    if (playerIndex === -1 || currentState.currentPlayer !== playerId) return;
 
     // Remove card from player's hand
-    const updatedPlayers = [...state.players];
+    const updatedPlayers = [...currentState.players];
     updatedPlayers[playerIndex] = {
       ...updatedPlayers[playerIndex],
       cards: updatedPlayers[playerIndex].cards.filter(
@@ -197,52 +202,56 @@ export const useGameStore = create<GameStore>((set, get) => ({
     };
 
     // Add card to current trick
-    const updatedTrick = [...state.currentTrick, { playerId, card }];
+    const updatedTrick = [...currentState.currentTrick, { playerId, card }];
 
     // If trick is complete, evaluate winner and update scores
     if (updatedTrick.length === 4) {
       const winnerId = get().evaluateTrick(updatedTrick);
-      const winner = state.players.find(p => p.id === winnerId)!;
-      const updatedTricksTaken = { ...state.tricksTaken };
+      const winner = currentState.players.find(p => p.id === winnerId);
+      
+      if (!winner) return;
+      
+      const updatedTricksTaken = { ...currentState.tricksTaken };
       updatedTricksTaken[`team${winner.team}`]++;
 
       // Check if round is complete
       if (updatedPlayers[0].cards.length === 0) {
         // Update scores based on bid and tricks taken
-        const winningTeam = state.winningBid ? 
-          state.players.find(p => p.id === state.winningBid.playerId)?.team : 
-          undefined;
+        const winningBid = currentState.winningBid;
+        if (!winningBid) return;
+
+        const winningPlayer = currentState.players.find(p => p.id === winningBid.playerId);
+        if (!winningPlayer) return;
+
+        const winningTeam = winningPlayer.team;
+        const bidTricks = winningBid.tricks;
+        const tricksTaken = updatedTricksTaken[`team${winningTeam}`];
+        const scoreDiff = tricksTaken >= bidTricks ? tricksTaken : -bidTricks;
         
-        if (winningTeam) {
-          const bidTricks = state.winningBid!.tricks;
-          const tricksTaken = updatedTricksTaken[`team${winningTeam}`];
-          const scoreDiff = tricksTaken >= bidTricks ? tricksTaken : -bidTricks;
-          
-          const updatedScores = { ...state.scores };
-          updatedScores[`team${winningTeam}`] += scoreDiff;
+        const updatedScores = { ...currentState.scores };
+        updatedScores[`team${winningTeam}`] += scoreDiff;
 
-          set({
-            scores: updatedScores,
-            status: state.mode === 'points' && 
-              (Math.abs(updatedScores.team1) >= 25 || Math.abs(updatedScores.team2) >= 25) ? 
-              'finished' : 'bidding',
-            round: state.round + 1,
-            currentTrick: [],
-            tricks: [],
-            bids: [],
-            tricksTaken: { team1: 0, team2: 0 },
-            winningBid: undefined,
-            trumpSuit: undefined
-          });
+        set({
+          scores: updatedScores,
+          status: currentState.mode === 'points' && 
+            (Math.abs(updatedScores.team1) >= 25 || Math.abs(updatedScores.team2) >= 25) ? 
+            'finished' : 'bidding',
+          round: currentState.round + 1,
+          currentTrick: [],
+          tricks: [],
+          bids: [],
+          tricksTaken: { team1: 0, team2: 0 },
+          winningBid: undefined,
+          trumpSuit: undefined
+        });
 
-          if (state.status !== 'finished') {
-            get().dealCards();
-          }
+        if (currentState.status !== 'finished') {
+          get().dealCards();
         }
       } else {
         set({
           currentTrick: [],
-          tricks: [...state.tricks, updatedTrick],
+          tricks: [...currentState.tricks, updatedTrick],
           tricksTaken: updatedTricksTaken,
           currentPlayer: winnerId
         });
@@ -251,7 +260,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       // Move to next player
       const nextPlayerIndex = (playerIndex + 1) % 4;
       set({
-        currentPlayer: state.players[nextPlayerIndex].id,
+        currentPlayer: currentState.players[nextPlayerIndex].id,
         currentTrick: updatedTrick
       });
     }
